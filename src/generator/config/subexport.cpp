@@ -722,7 +722,10 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             case "tcp"_hash:
                 break;
             case "ws"_hash:
-                proxy += ", ws=true, ws-path=" + path + ", sni=" + hostname;
+                if(host.empty())
+                    proxy += ", ws=true, ws-path=" + path + ", sni=" + hostname;
+                else
+                    proxy += ", ws=true, ws-path=" + path + ", sni=" + host;
                 if(!host.empty())
                     headers.push_back("Host:" + host);
                 if(!edge.empty())
@@ -2110,12 +2113,15 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
     std::vector<Proxy> nodelist;
     string_array remarks_list;
 
-    auto direct = buildObject(allocator, "type", "direct", "tag", "DIRECT");
-    outbounds.PushBack(direct, allocator);
-    auto reject = buildObject(allocator, "type", "block", "tag", "REJECT");
-    outbounds.PushBack(reject, allocator);
-    auto dns = buildObject(allocator, "type", "dns", "tag", "dns-out");
-    outbounds.PushBack(dns, allocator);
+    if (!ext.nodelist)
+    {
+        auto direct = buildObject(allocator, "type", "direct", "tag", "DIRECT");
+        outbounds.PushBack(direct, allocator);
+        auto reject = buildObject(allocator, "type", "block", "tag", "REJECT");
+        outbounds.PushBack(reject, allocator);
+        auto dns = buildObject(allocator, "type", "dns", "tag", "dns-out");
+        outbounds.PushBack(dns, allocator);
+    }
 
     for (Proxy &x : nodes)
     {
@@ -2140,6 +2146,8 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 proxy.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
                 if(!x.Plugin.empty() && !x.PluginOption.empty())
                 {
+                    if (x.Plugin == "simple-obfs")
+                        x.Plugin = "obfs-local";
                     proxy.AddMember("plugin", rapidjson::StringRef(x.Plugin.c_str()), allocator);
                     proxy.AddMember("plugin_opts", rapidjson::StringRef(x.PluginOption.c_str()), allocator);
                 }
@@ -2254,6 +2262,13 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
         remarks_list.emplace_back(x.Remark);
         outbounds.PushBack(proxy, allocator);
     }
+
+    if (ext.nodelist)
+    {
+        json | AddMemberOrReplace("outbounds", outbounds, allocator);
+        return;
+    }
+
     for (const ProxyGroupConfig &x: extra_proxy_group)
     {
         string_array filtered_nodelist;
@@ -2324,14 +2339,27 @@ std::string proxyToSingBox(std::vector<Proxy> &nodes, const std::string &base_co
 {
     using namespace rapidjson_ext;
     rapidjson::Document json;
-    json.Parse(base_conf.data());
-    if(json.HasParseError())
+
+    if (!ext.nodelist)
     {
-        writeLog(0, "sing-box base loader failed with error: " + std::string(rapidjson::GetParseError_En(json.GetParseError())), LOG_LEVEL_ERROR);
-        return "";
+        json.Parse(base_conf.data());
+        if (json.HasParseError())
+        {
+            writeLog(0, "sing-box base loader failed with error: " +
+                        std::string(rapidjson::GetParseError_En(json.GetParseError())), LOG_LEVEL_ERROR);
+            return "";
+        }
+    }
+    else
+    {
+        json.SetObject();
     }
 
     proxyToSingBox(nodes, json, ruleset_content_array, extra_proxy_group, ext);
+
+    if(ext.nodelist || !ext.enable_rule_generator)
+        return json | SerializeObject();
+
     rulesetToSingBox(json, ruleset_content_array, ext.overwrite_original_rules);
 
     return json | SerializeObject();
